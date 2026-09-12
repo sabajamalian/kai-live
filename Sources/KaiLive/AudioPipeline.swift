@@ -11,6 +11,7 @@ final class AudioPipeline: @unchecked Sendable {
     private let onInputLevel: LevelHandler
     private let onOutputLevel: LevelHandler
     private let processingQueue = DispatchQueue(label: "KaiLive.AudioProcessing")
+    private let stateLock = NSLock()
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 24_000,
@@ -22,6 +23,8 @@ final class AudioPipeline: @unchecked Sendable {
     private let inputStream: AsyncStream<Data>
     private let inputContinuation: AsyncStream<Data>.Continuation
     private var inputTask: Task<Void, Never>?
+    private var tapInstalled = false
+    private var stopped = false
 
     init(
         onInputData: @escaping InputHandler,
@@ -47,8 +50,16 @@ final class AudioPipeline: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 2_400, format: inputFormat) { [weak self] buffer, _ in
             self?.processInput(buffer)
         }
+        stateLock.withLock {
+            tapInstalled = true
+        }
 
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            stop()
+            throw error
+        }
         player.play()
         inputTask = Task { [inputStream, inputHandler] in
             for await data in inputStream {
@@ -62,6 +73,15 @@ final class AudioPipeline: @unchecked Sendable {
     }
 
     func stop() {
+        let shouldRemoveTap = stateLock.withLock {
+            guard !stopped else { return false }
+            stopped = true
+            let installed = tapInstalled
+            tapInstalled = false
+            return installed
+        }
+        guard shouldRemoveTap else { return }
+
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()

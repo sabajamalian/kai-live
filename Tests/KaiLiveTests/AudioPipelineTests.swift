@@ -14,4 +14,16 @@ struct AudioPipelineTests {
         let data = Data(bytes: &samples, count: samples.count * MemoryLayout<Int16>.size)
         #expect(AudioPipeline.level(of: data) > 0)
     }
+
+    @Test
+    func stoppingWithoutStartingIsIdempotent() {
+        let pipeline = AudioPipeline(
+            onInputData: { _ in },
+            onInputLevel: { _ in },
+            onOutputLevel: { _ in }
+        )
+
+        pipeline.stop()
+        pipeline.stop()
+    }
 }
