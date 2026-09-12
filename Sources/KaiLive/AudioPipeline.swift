@@ -2,6 +2,12 @@
 import Foundation
 
 final class AudioPipeline: @unchecked Sendable {
+    private enum Lifecycle {
+        case idle
+        case running
+        case stopped
+    }
+
     typealias InputHandler = @Sendable (Data) async throws -> Void
     typealias LevelHandler = @MainActor @Sendable (Float) -> Void
 
@@ -23,8 +29,8 @@ final class AudioPipeline: @unchecked Sendable {
     private let inputStream: AsyncStream<Data>
     private let inputContinuation: AsyncStream<Data>.Continuation
     private var inputTask: Task<Void, Never>?
+    private var lifecycle = Lifecycle.idle
     private var tapInstalled = false
-    private var stopped = false
 
     init(
         onInputData: @escaping InputHandler,
@@ -40,6 +46,15 @@ final class AudioPipeline: @unchecked Sendable {
     }
 
     func start() throws {
+        let canStart = stateLock.withLock {
+            guard lifecycle == .idle else { return false }
+            lifecycle = .running
+            return true
+        }
+        guard canStart else {
+            throw AudioPipelineError.alreadyStarted
+        }
+
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         converter = AVAudioConverter(from: inputFormat, to: targetFormat)
@@ -73,16 +88,18 @@ final class AudioPipeline: @unchecked Sendable {
     }
 
     func stop() {
-        let shouldRemoveTap = stateLock.withLock {
-            guard !stopped else { return false }
-            stopped = true
+        let stopState = stateLock.withLock {
+            guard lifecycle == .running else { return (false, false) }
+            lifecycle = .stopped
             let installed = tapInstalled
             tapInstalled = false
-            return installed
+            return (true, installed)
         }
-        guard shouldRemoveTap else { return }
+        guard stopState.0 else { return }
 
-        engine.inputNode.removeTap(onBus: 0)
+        if stopState.1 {
+            engine.inputNode.removeTap(onBus: 0)
+        }
         player.stop()
         engine.stop()
         converter = nil
@@ -202,11 +219,13 @@ private final class InputBufferSource: @unchecked Sendable {
 }
 
 enum AudioPipelineError: LocalizedError {
+    case alreadyStarted
     case incompleteSample
     case bufferCreationFailed
 
     var errorDescription: String? {
         switch self {
+        case .alreadyStarted: "The audio pipeline has already been started."
         case .incompleteSample: "Received an incomplete PCM audio sample."
         case .bufferCreationFailed: "Could not allocate an audio playback buffer."
         }
