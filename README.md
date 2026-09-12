@@ -9,7 +9,7 @@ This repository is a working native Swift implementation of OpenAI's Live API. I
 - Runs as a menu bar app with no permanent Dock window
 - Opens a visible setup window on first launch
 - Starts a voice session when the conversation popover opens
-- Captures and converts microphone audio to 24 kHz mono PCM16
+- Captures and converts microphone audio to the Live session's PCM format
 - Streams microphone and assistant audio at the same time
 - Supports natural interruptions and overlapping speech
 - Displays rolling captions for the user and Kai
@@ -21,8 +21,8 @@ This repository is a working native Swift implementation of OpenAI's Live API. I
 
 ## Requirements
 
-- macOS 14 or newer
-- Xcode 26, or a compatible Swift 6.2 toolchain
+- macOS 14 or newer, as configured in [`Package.swift`](Package.swift)
+- An Xcode toolchain with Swift 6.2 support, as declared in [`Package.swift`](Package.swift)
 - An OpenAI project with access to `gpt-live-1`
 - A paid API tier, because OpenAI does not list the Free tier as supported
 
@@ -98,7 +98,7 @@ KeychainStore               LiveSession
                     |                   |
               AVAudioConverter      AVAudioPlayerNode
                     |
-             24 kHz mono PCM16
+               Live PCM audio
 ```
 
 `AppModel` owns the UI state and active conversation. `LiveSession` owns the WebSocket lifecycle and the subset of Live events used by the app. `AudioPipeline` keeps microphone processing off the audio callback, converts device input to the session format, preserves chunk order, and queues assistant audio for playback.
@@ -108,7 +108,7 @@ The Live session starts with:
 - model: `gpt-live-1`
 - transport: WebSocket
 - endpoint: `wss://api.openai.com/v1/live/sessions`
-- audio: signed 16-bit little-endian PCM, mono, 24 kHz
+- audio: signed 16-bit little-endian PCM, mono, 24 kHz, following OpenAI's [WebSocket audio format](https://developers.openai.com/api/docs/guides/voice-websockets?api=live#choose-the-audio-format)
 - delegation: client
 - server-side session storage: disabled
 
@@ -141,7 +141,7 @@ A practical MCP implementation would:
 5. Validate and reduce the MCP result to the facts Kai needs to say.
 6. Return the result with `session.commentary.append` using the original delegation ID.
 
-That work needs an MCP client, server configuration, process lifecycle management, JSON-RPC transport, tool schemas, permission policy, confirmation UI, timeouts, cancellation, and result redaction. Those controls belong in the application rather than the voice prompt.
+That work needs an MCP client, server configuration, process lifecycle management, JSON-RPC transport, tool schemas, permission policy, confirmation UI, timeouts, cancellation, and result redaction. The application must enforce those controls independently of the voice prompt.
 
 ## Known limitations
 
