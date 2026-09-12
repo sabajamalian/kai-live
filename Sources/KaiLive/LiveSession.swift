@@ -149,12 +149,17 @@ actor LiveSession {
         } catch is CancellationError {
             return
         } catch {
-            if !closing {
-                await onEvent(.error(error.localizedDescription))
-            }
+            let shouldNotify = !closing
             closeTimeoutTask?.cancel()
+            audio?.stop()
+            webSocket.cancel(with: .goingAway, reason: nil)
+            self.webSocket = nil
+            receiveTask = nil
             closeContinuation?.resume(throwing: error)
             closeContinuation = nil
+            if shouldNotify {
+                await onEvent(.error(error.localizedDescription))
+            }
         }
     }
 
@@ -214,7 +219,7 @@ actor LiveSession {
                 event.values["error"]?.objectValue?["message"]?.stringValue
                 ?? event.values["message"]?.stringValue
                 ?? "The GPT-Live session returned an unknown error."
-            await onEvent(.error(message))
+            throw LiveSessionError.server(message)
 
         default:
             break
@@ -250,12 +255,14 @@ enum LiveSessionError: LocalizedError {
     case notConnected
     case invalidEvent
     case closeTimedOut
+    case server(String)
 
     var errorDescription: String? {
         switch self {
         case .notConnected: "The GPT-Live connection is not open."
         case .invalidEvent: "Kai could not encode a GPT-Live event."
         case .closeTimedOut: "The session ended without confirmed final usage."
+        case let .server(message): message
         }
     }
 }
