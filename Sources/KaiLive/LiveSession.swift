@@ -33,6 +33,7 @@ actor LiveSession {
     private var closing = false
     private var closeReceived = false
     private var closeContinuation: CheckedContinuation<Void, Error>?
+    private var closeTimeoutTask: Task<Void, Never>?
 
     init(
         apiKey: String,
@@ -82,20 +83,12 @@ actor LiveSession {
 
         closing = true
         audio?.stop()
-        try await send(ClientEvent.close())
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                try await withCheckedThrowingContinuation { continuation in
-                    Task { await self.setCloseContinuation(continuation) }
-                }
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(15))
-                throw LiveSessionError.closeTimedOut
-            }
-            _ = try await group.next()
-            group.cancelAll()
+        do {
+            try await send(ClientEvent.close())
+            try await waitForClose()
+        } catch {
+            stopNow()
+            throw error
         }
 
         webSocket.cancel(with: .normalClosure, reason: nil)
@@ -108,18 +101,33 @@ actor LiveSession {
     }
 
     private func stopNow() {
+        closeTimeoutTask?.cancel()
         audio?.stop()
         webSocket?.cancel(with: .goingAway, reason: nil)
         receiveTask?.cancel()
         webSocket = nil
     }
 
-    private func setCloseContinuation(_ continuation: CheckedContinuation<Void, Error>) {
-        if closeReceived {
-            continuation.resume()
-        } else {
+    private func waitForClose() async throws {
+        if closeReceived { return }
+        try await withCheckedThrowingContinuation { continuation in
             closeContinuation = continuation
+            closeTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await self?.handleCloseTimeout()
+            }
         }
+    }
+
+    private func handleCloseTimeout() {
+        guard let continuation = closeContinuation else { return }
+        closeContinuation = nil
+        audio?.stop()
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        receiveTask?.cancel()
+        webSocket = nil
+        continuation.resume(throwing: LiveSessionError.closeTimedOut)
     }
 
     private func receiveLoop() async {
@@ -144,6 +152,7 @@ actor LiveSession {
             if !closing {
                 await onEvent(.error(error.localizedDescription))
             }
+            closeTimeoutTask?.cancel()
             closeContinuation?.resume(throwing: error)
             closeContinuation = nil
         }
@@ -194,6 +203,7 @@ actor LiveSession {
         case "session.closed":
             audio?.stop()
             closeReceived = true
+            closeTimeoutTask?.cancel()
             let duration = extractDuration(from: event.values["usage"])
             await onEvent(.closed(durationSeconds: duration))
             closeContinuation?.resume()
